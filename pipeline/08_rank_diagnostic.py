@@ -14,7 +14,7 @@ from config import EMBEDDINGS_NPZ, ENTITIES_PARQUET
 from integrations import inlp
 from metrics import cross_corpus_mixing, fully_mixed_baseline, linear_recoverability
 
-KS = [0, 1, 2, 4, 8, 16, 32, 64]
+KS = [0, 1, 2, 3, 4, 8, 16, 32, 64]  # K-1 (=3 for 4 corpuses) is the expected linear rank
 
 
 def main():

@@ -1,11 +1,12 @@
-"""Stage 00 — fetch Greek & Norse mythological figures from Wikipedia.
+"""Stage 00 — fetch mythological figures from Wikipedia (greek_norse or pantheons).
 
-Two corpuses, SAME source (Wikipedia), so the medium/register is controlled and any
-separation the map shows is content-driven, not style-driven. Per-entity text = the
-figure's NAME prefixed to its plain-text article (lead + start of body), truncated.
-We deliberately do NOT template the pantheon ("Greek god of X") into the text — that
-would hand-feed the exact corpus axis later experiments try to erase; the corpus signal
-should arise from genuine content (names, vocabulary, myths).
+The roster set is chosen by the DATASET env var via ROSTERS below: greek_norse = Greek +
+Norse; pantheons = + Egyptian + Hindu. All corpuses share the SAME source (Wikipedia), so
+the medium/register is controlled and any separation the map shows is content-driven, not
+style-driven. Per-entity text = the figure's NAME prefixed to its plain-text article (lead
++ start of body), truncated. We deliberately do NOT template the pantheon ("Greek god of
+X") into the text — that would hand-feed the exact corpus axis later experiments try to
+erase; the corpus signal should arise from genuine content (names, vocabulary, myths).
 
 Output: data/entities.parquet  (id, name, corpus, title, url, text, char_len)
 """
@@ -16,6 +17,7 @@ import time
 import pandas as pd
 import requests
 from config import (
+    DATASET,
     ENTITIES_PARQUET,
     MAX_TEXT_CHARS,
     WIKIPEDIA_API,
@@ -131,6 +133,112 @@ NORSE = [
     "Móði and Magni",
     "Njörun",
 ]
+EGYPTIAN = [
+    "Ra",
+    "Osiris",
+    "Isis",
+    "Horus",
+    "Set (deity)",
+    "Anubis",
+    "Thoth",
+    "Hathor",
+    "Bastet",
+    "Sekhmet",
+    "Ptah",
+    "Amun",
+    "Nut (goddess)",
+    "Geb",
+    "Shu (Egyptian god)",
+    "Tefnut",
+    "Nephthys",
+    "Sobek",
+    "Khnum",
+    "Khonsu",
+    "Maat",
+    "Mut",
+    "Atum",
+    "Montu",
+    "Wadjet",
+    "Nekhbet",
+    "Bes",
+    "Taweret",
+    "Apis (deity)",
+    "Apep",
+    "Khepri",
+    "Hapi (Nile god)",
+    "Serqet",
+    "Neith",
+    "Aten",
+    "Anhur",
+    "Heka (god)",
+    "Wepwawet",
+    "Min (god)",
+    "Sia (god)",
+    "Renenutet",
+    "Meretseger",
+    "Heqet",
+    "Nefertem",
+    "Sopdu",
+    "Sopdet",
+    "Banebdjedet",
+    "Mafdet",
+]
+HINDU = [
+    "Brahma",
+    "Vishnu",
+    "Shiva",
+    "Indra",
+    "Agni",
+    "Varuna",
+    "Vayu",
+    "Surya",
+    "Yama",
+    "Lakshmi",
+    "Saraswati",
+    "Parvati",
+    "Durga",
+    "Kali",
+    "Ganesha",
+    "Kartikeya",
+    "Hanuman",
+    "Krishna",
+    "Rama",
+    "Ganga (goddess)",
+    "Ushas",
+    "Ratri",
+    "Prithvi",
+    "Aditi",
+    "Rudra",
+    "Kubera",
+    "Kamadeva",
+    "Chandra",
+    "Mitra (Vedic)",
+    "Pushan",
+    "Savitr",
+    "Tvashtr",
+    "Vishvakarma",
+    "Dyaus",
+    "Ashvins",
+    "Maruts",
+    "Bhairava",
+    "Garuda",
+    "Shesha",
+    "Narasimha",
+    "Varaha",
+    "Matsya",
+    "Kurma",
+    "Radha",
+    "Sita",
+    "Dhanvantari",
+    "Aryaman",
+    "Bhaga",
+]
+
+# Roster set per DATASET (greek_norse reuses the two pilot lists; pantheons adds two more).
+ROSTERS = {
+    "greek_norse": {"Greek": GREEK, "Norse": NORSE},
+    "pantheons": {"Greek": GREEK, "Norse": NORSE, "Egyptian": EGYPTIAN, "Hindu": HINDU},
+}
 
 
 def fetch_extracts(titles, max_retries=6, timeout=30, batch_size=20):
@@ -207,10 +315,18 @@ def build_rows(extracts, corpus):
 
 
 def main():
-    greek_ex, greek_missing = fetch_extracts(GREEK)
-    norse_ex, norse_missing = fetch_extracts(NORSE)
+    rosters = ROSTERS.get(DATASET)
+    if rosters is None:
+        raise SystemExit(f"00_fetch_deities has no roster for DATASET={DATASET!r}; known: {sorted(ROSTERS)}")
 
-    rows = build_rows(greek_ex, "Greek") + build_rows(norse_ex, "Norse")
+    rows, all_missing = [], []
+    for ci, (corpus, titles) in enumerate(rosters.items()):
+        if ci:
+            time.sleep(3)  # extra politeness between pantheons (Wikipedia 429s on bursts)
+        extracts, missing = fetch_extracts(titles)
+        rows += build_rows(extracts, corpus)
+        all_missing += [f"[{corpus}] {m}" for m in missing]
+
     df = pd.DataFrame(rows).sort_values(["corpus", "name"]).reset_index(drop=True)
 
     # Atomic write + verify (never clobber expensive artifacts in place).
@@ -220,12 +336,11 @@ def main():
     assert len(verify) == len(df), f"row count mismatch: {len(verify)} vs {len(df)}"
     os.replace(tmp, ENTITIES_PARQUET)
 
-    n_greek = int((df["corpus"] == "Greek").sum())
-    n_norse = int((df["corpus"] == "Norse").sum())
-    print(f"Wrote {len(df)} entities ({n_greek} Greek, {n_norse} Norse) to {ENTITIES_PARQUET}")
+    counts = df["corpus"].value_counts().sort_index()
+    summary = ", ".join(f"{n} {c}" for c, n in counts.items())
+    print(f"Wrote {len(df)} entities ({summary}) to {ENTITIES_PARQUET}")
     print(f"Median article length: {int(df['char_len'].median())} chars (truncated at {MAX_TEXT_CHARS})")
 
-    all_missing = greek_missing + norse_missing
     if all_missing:
         print(f"\n{len(all_missing)} MISSING / empty (fix titles and re-run):")
         for t in all_missing:

@@ -35,6 +35,13 @@ DATASET=marvel_dc uv run python pipeline/08_rank_diagnostic.py   # INLP rank-swe
 DATASET=marvel_dc_anon uv run python pipeline/00b_strip_names.py   # derives from marvel_dc
 DATASET=marvel_dc_anon uv run python pipeline/01_embed.py
 DATASET=marvel_dc_anon uv run python pipeline/06_ablation.py
+
+# Greek × Norse × Egyptian × Hindu (N-way, Wikipedia). Multiclass LEACE; ablation path.
+DATASET=pantheons uv run python pipeline/00_fetch_deities.py
+DATASET=pantheons uv run python pipeline/01_embed.py
+DATASET=pantheons uv run python pipeline/06_ablation.py
+DATASET=pantheons uv run python pipeline/07_ablation_maps.py
+DATASET=pantheons uv run python pipeline/08_rank_diagnostic.py   # INLP sweep: signal is rank-(K-1)=3
 ```
 
 (`make pipeline` runs the greek_norse single-method path only.) **View a map:** serve the
@@ -45,7 +52,8 @@ datamapplot `offline_mode=True`, so the HTML is self-contained (works without a 
 
 ## Pipeline stages (`pipeline/`)
 
-- **00_fetch_deities.py** — greek_norse: curated Wikipedia leads (intro extracts, batched).
+- **00_fetch_deities.py** — greek_norse + pantheons: curated Wikipedia leads (intro extracts,
+  batched); roster set chosen by DATASET via the `ROSTERS` dict (a polite pause between pantheons).
 - **00_fetch_fandom.py** — marvel_dc: Fandom character prose; roster by page length (ns0),
   prose from the `{{Character Template}}` params via `mwparserfromhell`.
 - **00b_strip_names.py** — marvel_dc_anon: strip character names from marvel_dc text.
@@ -79,8 +87,8 @@ text, char_len`. Writes are atomic (tmp + `os.replace`); see `running-data-pipel
 
 ## Metrics (how to read)
 
-1. **Cross-corpus kNN mixing** (primary) — fraction of each point's neighbors from the *other*
-   corpus; ~0 = two blobs, ~0.5 = fully interleaved.
+1. **Cross-corpus kNN mixing** (primary) — fraction of each point's neighbors from a *different*
+   corpus; ~0 = separate blobs, fully interleaved → (K−1)/K (0.5 for two corpuses, ~0.75 for four).
 2. **Linear recoverability** — CV accuracy predicting corpus; only reliable when **d < n**
    (unreliable in the ~100-pt pilot where d=1024 ≫ n).
 3. **Aptness vs KNOWN analogues** — top-1 cross-corpus NN, under cosine and CSLS.
@@ -91,14 +99,17 @@ Rank-1 **LEACE ≈ per-corpus centering ≥ Harmony**; the corpus difference is 
 signal. Same-medium (Greek/Norse) interleaves nearly fully; different-medium + scale (Marvel/DC)
 half-merges, and the residual is **genuine franchise structure to keep**, not under-merging.
 CSLS is subsumed by integration. Input text dominates: names contaminate matching.
+**N-way (Greek/Norse/Egyptian/Hindu) generalizes this exactly**: the corpus signal is **rank-(K−1)**
+(INLP recoverability collapses 1.00→0.005 at k=3; closed-form multiclass LEACE — erasing the (K−1)-dim
+class-mean subspace — removes precisely it), again **LEACE ≈ centering ≥ Harmony**, regions name as
+cross-pantheon archetypes (Hades↔Hel↔Anubis↔Yama), residual is genuine (a Vishnu-avatar pocket; Horus a hub).
 
 ## Status & next
 
-Done: greek_norse (pilot), marvel_dc (+ marvel_dc_anon). **Next:** (1) N>2 corpuses — 3–4
-mythologies, reusing the Wikipedia fetch (multiclass erasure; region-names handle N-way);
-(2) multimodal — paintings (images) × film/book summaries (text), testing whether rank-1 erasure
-closes the CLIP-style modality gap; (3) write up + publish via GitHub Pages, possibly share to
-the TutteInstitute/toponymy discussions.
+Done: greek_norse (pilot), marvel_dc (+ marvel_dc_anon), pantheons (N=4 mythologies; rank-(K−1)
+confirmed). **Next:** (1) multimodal — paintings (images) × film/book summaries (text), testing
+whether rank-1 erasure closes the CLIP-style modality gap (Cohere embed-v4.0 is already multimodal);
+(2) write up + publish via GitHub Pages, possibly share to the TutteInstitute/toponymy discussions.
 
 ## Env
 

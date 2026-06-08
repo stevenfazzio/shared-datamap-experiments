@@ -2,7 +2,7 @@
 ablation (stage 06) so every method is scored with identical code.
 
   - cross_corpus_mixing: mean fraction of each point's k nearest neighbors that are
-    cross-corpus. ~0.5 = fully mixed, -> 0 = two blobs.
+    cross-corpus. -> 0 = blobs; fully mixed -> (K-1)/K (0.5 for two corpuses, ~0.75 for four).
   - linear_recoverability: 5-fold CV accuracy of predicting corpus from the embedding.
     ~1.0 = separable, -> chance = integrated. CAVEAT: with d >> n (1024 >> 102),
     in-sample linear separation is trivial, so kNN mixing and the map are the more
@@ -44,10 +44,10 @@ def fully_mixed_baseline(corpus):
 
 
 def linear_recoverability(emb, corpus, cv=5):
-    labels = sorted(set(corpus.tolist()))
-    y = (corpus == labels[0]).astype(int)
-    acc = float(cross_val_score(LogisticRegression(max_iter=2000), _unit(emb), y, cv=cv).mean())
-    chance = float(max(y.mean(), 1 - y.mean()))
+    corpus = np.asarray(corpus)
+    acc = float(cross_val_score(LogisticRegression(max_iter=2000), _unit(emb), corpus, cv=cv).mean())
+    _, counts = np.unique(corpus, return_counts=True)
+    chance = float(counts.max() / counts.sum())  # majority-class frequency (1/K if balanced)
     return acc, chance
 
 
@@ -58,32 +58,29 @@ def _topk_mean(block, k):
 
 
 def cross_corpus_nn(emb, corpus, names, method="cosine", csls_k=10):
-    """Map each figure -> its nearest figure in the *other* corpus.
+    """Map each figure -> its single nearest figure in a DIFFERENT corpus.
 
-    cosine: plain nearest cosine neighbor. csls: 2*cos(i,j) - r_B(i) - r_A(j), where
-    r_B(i) is i's mean similarity to its k nearest in the target corpus and r_A(j) is j's
-    mean similarity to its k nearest in the source corpus — penalizing hub candidates.
+    The candidate pool for a source figure is every figure not in its own corpus, so this
+    generalizes to K > 2 (binary is the special case of one other corpus). cosine: plain
+    nearest cosine neighbor. csls: 2*cos(i,j) - r_O(i) - r_S(j), where r_O(i) is i's mean
+    similarity to its top-k in the combined OTHER-corpus pool and r_S(j) is candidate j's
+    mean similarity to its top-k within i's own (Source) corpus — penalizing hub candidates.
     """
     u = _unit(emb)
     sim = u @ u.T
-    labels = sorted(set(corpus.tolist()))
+    corpus = np.asarray(corpus)
     out = {}
-    for a in labels:
-        ai = np.where(corpus == a)[0]
-        for b in labels:
-            if b == a:
-                continue
-            bj = np.where(corpus == b)[0]
-            block = sim[np.ix_(ai, bj)]  # (|A|, |B|) cosine
-            if method == "csls":
-                r_b = _topk_mean(block, csls_k)  # per source a: mean sim to top-k in B
-                r_a = _topk_mean(sim[np.ix_(bj, ai)], csls_k)  # per target b: mean sim to top-k in A
-                score = 2 * block - r_b[:, None] - r_a[None, :]
-            else:
-                score = block
-            nn = bj[np.argmax(score, axis=1)]
-            for idx, qi in enumerate(ai):
-                out[names[qi]] = names[nn[idx]]
+    for i in range(len(corpus)):
+        other = np.where(corpus != corpus[i])[0]
+        block = sim[i, other]  # (|other|,)
+        if method == "csls":
+            r_o = _topk_mean(block[None, :], csls_k)[0]  # i's mean sim to its top-k others
+            same = np.where(corpus == corpus[i])[0]
+            r_s = _topk_mean(sim[np.ix_(other, same)], csls_k)  # each cand's top-k into i's corpus
+            score = 2 * block - r_o - r_s
+        else:
+            score = block
+        out[names[i]] = names[other[np.argmax(score)]]
     return out
 
 

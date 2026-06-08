@@ -38,6 +38,114 @@ MARVEL_DC_KNOWN = {
     "Nicholas Fury": {"Amanda Waller"},  # spymasters
 }
 
+# Cross-pantheon archetype groups (display names) for the N-way aptness ground truth: each
+# group is one shared archetype with its members in each tradition. Flattened below into the
+# name -> {acceptable cross-pantheon analogues} form the aptness metric consumes. Lenient and
+# many-to-many on purpose (a figure may sit in several groups); a low hit-rate on the clear
+# archetypes (sun / moon / sea / death / love) would be the real warning sign.
+PANTHEONS_ARCHETYPES = {
+    "sky-father / king of the gods": {
+        "Greek": ["Zeus"],
+        "Norse": ["Odin"],
+        "Egyptian": ["Ra", "Amun", "Atum"],
+        "Hindu": ["Indra", "Dyaus"],
+    },
+    "thunder / storm / war-champion": {
+        "Greek": ["Zeus", "Ares"],
+        "Norse": ["Thor", "Týr"],
+        "Egyptian": ["Set", "Montu", "Anhur"],
+        "Hindu": ["Indra", "Kartikeya"],
+    },
+    "love / beauty / desire": {
+        "Greek": ["Aphrodite", "Eros"],
+        "Norse": ["Freyja"],
+        "Egyptian": ["Hathor"],
+        "Hindu": ["Kamadeva", "Radha", "Lakshmi"],
+    },
+    "great queen / consort-mother": {
+        "Greek": ["Hera"],
+        "Norse": ["Frigg"],
+        "Egyptian": ["Mut", "Isis"],
+        "Hindu": ["Parvati", "Saraswati"],
+    },
+    "sea & the waters": {
+        "Greek": ["Poseidon", "Oceanus", "Amphitrite", "Triton"],
+        "Norse": ["Njörðr", "Ægir", "Rán"],
+        "Egyptian": ["Sobek", "Hapi"],
+        "Hindu": ["Varuna", "Ganga"],
+    },
+    "death & the underworld": {
+        "Greek": ["Hades", "Persephone", "Thanatos", "Charon"],
+        "Norse": ["Hel"],
+        "Egyptian": ["Osiris", "Anubis", "Nephthys"],
+        "Hindu": ["Yama"],
+    },
+    "the sun": {
+        "Greek": ["Helios", "Apollo"],
+        "Norse": ["Sól"],
+        "Egyptian": ["Ra", "Aten", "Khepri"],
+        "Hindu": ["Surya", "Pushan", "Savitr"],
+    },
+    "the moon": {"Greek": ["Selene"], "Norse": ["Máni"], "Egyptian": ["Khonsu", "Thoth"], "Hindu": ["Chandra"]},
+    "dawn": {"Greek": ["Eos"], "Norse": ["Dagr"], "Hindu": ["Ushas"]},
+    "night": {"Greek": ["Nyx"], "Norse": ["Nótt"], "Egyptian": ["Nut"], "Hindu": ["Ratri"]},
+    "wisdom, craft & writing": {
+        "Greek": ["Athena", "Hephaestus", "Hermes"],
+        "Norse": ["Bragi", "Kvasir", "Mímir"],
+        "Egyptian": ["Thoth", "Ptah"],
+        "Hindu": ["Saraswati", "Vishvakarma", "Brahma"],
+    },
+    "trickster / messenger / liminal guide": {
+        "Greek": ["Hermes"],
+        "Norse": ["Loki", "Hermóðr"],
+        "Egyptian": ["Thoth", "Anubis"],
+    },
+    "the hunt & wild beasts": {
+        "Greek": ["Artemis", "Pan"],
+        "Norse": ["Skaði", "Ullr"],
+        "Egyptian": ["Neith", "Bastet", "Sekhmet"],
+        "Hindu": ["Rudra"],
+    },
+    "healing & medicine": {
+        "Greek": ["Asclepius"],
+        "Norse": ["Eir"],
+        "Egyptian": ["Serqet", "Heka"],
+        "Hindu": ["Dhanvantari", "Ashvins"],
+    },
+    "fire & the forge": {"Greek": ["Hephaestus"], "Egyptian": ["Ptah"], "Hindu": ["Agni"]},
+    "grain, fertility & the cultivated earth": {
+        "Greek": ["Demeter", "Dionysus", "Persephone"],
+        "Norse": ["Freyr", "Gefjon", "Sif"],
+        "Egyptian": ["Osiris", "Renenutet"],
+        "Hindu": ["Prithvi"],
+    },
+    "the earth": {"Greek": ["Gaia"], "Egyptian": ["Geb"], "Hindu": ["Prithvi"]},
+    "primordial origin / first beings": {
+        "Greek": ["Gaia", "Uranus", "Cronus"],
+        "Norse": ["Ymir", "Búri", "Borr", "Auðumbla"],
+        "Egyptian": ["Atum"],
+        "Hindu": ["Brahma", "Aditi"],
+    },
+    "wind & air": {"Egyptian": ["Shu"], "Hindu": ["Vayu", "Maruts"]},
+    "wealth & fortune": {"Greek": ["Tyche"], "Egyptian": ["Hapi"], "Hindu": ["Kubera", "Lakshmi"]},
+}
+
+
+def _known_from_archetypes(archetypes):
+    """Flatten archetype groups into the aptness format: display name -> {acceptable
+    analogues from OTHER pantheons}, unioned over every group a figure appears in.
+    Same-pantheon members are never acceptable cross-corpus matches."""
+    known = {}
+    for group in archetypes.values():
+        for pantheon, members in group.items():
+            others = {m for p, ms in group.items() if p != pantheon for m in ms}
+            for m in members:
+                known.setdefault(m, set()).update(others)
+    return {k: v for k, v in known.items() if v}
+
+
+PANTHEONS_KNOWN = _known_from_archetypes(PANTHEONS_ARCHETYPES)
+
 DATASETS = {
     "greek_norse": {
         "colors": {"Greek": "#e41a1c", "Norse": "#377eb8"},
@@ -62,6 +170,24 @@ DATASETS = {
         "known": MARVEL_DC_KNOWN,
         # Defaults suited to a ~2000-point map.
         "toponymy": {"min_clusters": 6, "base_min_cluster_size": 20, "min_samples": 5},
+    },
+    "pantheons": {
+        "colors": {
+            "Greek": "#e41a1c",  # red
+            "Norse": "#377eb8",  # blue
+            "Egyptian": "#ff7f00",  # gold / orange
+            "Hindu": "#4daf4a",  # green
+        },
+        "object_description": "Greek, Norse, Egyptian, and Hindu mythological figures",
+        "corpus_description": (
+            "deities and mythological figures from Greek, Norse, Egyptian, and Hindu "
+            "traditions (gods, goddesses, Titans, primordial beings), each described by "
+            "its Wikipedia lead"
+        ),
+        "title": "Greek × Norse × Egyptian × Hindu",
+        "known": PANTHEONS_KNOWN,
+        # ~190-point map: between the greek_norse pilot (100) and marvel_dc (2000).
+        "toponymy": {"min_clusters": 4, "base_min_cluster_size": 5, "min_samples": 3},
     },
 }
 

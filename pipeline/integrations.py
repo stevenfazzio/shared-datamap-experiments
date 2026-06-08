@@ -7,9 +7,9 @@ embedding transform.
 
   raw:     identity (the two-blob baseline)
   center:  subtract each corpus's mean (crude offset removal)
-  leace:   rank-1 least-squares concept erasure of the corpus direction (binary, closed
-           form). Computed in the covariance eigen row-space so it's well-defined when
-           d >> n (here 1024 >> 102, so the ambient covariance is singular).
+  leace:   least-squares concept erasure of the corpus signal for K>=2 classes. Erases
+           the span of the whitened class-mean deviations (dim <= K-1; rank-1 for K=2),
+           computed in the covariance eigen row-space so it's well-defined when d >> n.
   harmony: Harmony batch-integration (iterative cluster-and-correct)
 """
 
@@ -26,7 +26,7 @@ def integrate(method, emb, corpus):
     if method == "center":
         return _center(emb, corpus)
     if method == "leace":
-        return _leace_binary(emb, corpus)
+        return _leace(emb, corpus)
     if method == "harmony":
         return _harmony(emb, corpus)
     raise ValueError(f"unknown integration method: {method}")
@@ -40,16 +40,18 @@ def _center(emb, corpus):
     return out
 
 
-def _leace_binary(emb, corpus, tol=1e-9):
-    """LEACE for a binary concept: erase the whitened class-mean-difference direction.
+def _leace(emb, corpus, tol=1e-9):
+    """LEACE concept erasure of the corpus signal, for K >= 2 classes.
 
-    For binary z, the LEACE eraser removes the column space of W·Σ_XZ in whitened
-    coordinates, which is exactly the whitened difference of class means. We compute the
-    whitening in the eigen row-space of the covariance (eigenvalues > tol), so the singular
-    d>>n case is handled and the zero-variance null space is left untouched.
+    LEACE removes (in whitened coordinates) the column space of W·Σ_XZ where Z is the
+    one-hot class indicator. For one-hot Z that column space is exactly the span of the
+    whitened class-mean deviations {μ_c − μ̄}, of dimension <= K−1 (they sum to zero).
+    Projecting that whole subspace out kills every linear corpus direction at once; for
+    K=2 it reduces to the rank-1 difference-of-means edit. Whitening is done in the
+    covariance eigen row-space (eigenvalues > tol) so the singular d >> n case is
+    well-defined and the zero-variance null space is left untouched.
     """
     labels = sorted(set(corpus.tolist()))
-    z = (corpus == labels[0]).astype(np.float64)
     mu = emb.mean(axis=0, keepdims=True)
     Xc = emb - mu
 
@@ -58,14 +60,17 @@ def _leace_binary(emb, corpus, tol=1e-9):
     keep = vals > tol * vals.max()
     V = vecs[:, keep]  # (d, k) row-space basis
     s = np.sqrt(vals[keep])  # (k,) singular values
-
     Xw = (Xc @ V) / s  # (n, k) whitened (isotropic within row-space)
-    u = Xw[z == 1].mean(0) - Xw[z == 0].mean(0)  # ∝ W·Σ_XZ for binary z
-    nu = np.linalg.norm(u)
-    if nu < 1e-12:
+
+    # Whitened class-mean deviations; their row space IS the corpus subspace (dim <= K-1).
+    M = np.stack([Xw[corpus == c].mean(0) for c in labels])  # (K, k)
+    M = M - M.mean(0, keepdims=True)
+    _, sv, Wt = np.linalg.svd(M, full_matrices=False)  # rows of Wt span M's row space
+    r = int((sv > tol * (sv.max() + 1e-300)).sum())
+    if r == 0:
         return emb.copy()
-    u = u / nu
-    Xw_e = Xw - (Xw @ u)[:, None] * u[None, :]  # project the corpus direction out
+    B = Wt[:r]  # (r, k) orthonormal basis of the corpus subspace in whitened coords
+    Xw_e = Xw - (Xw @ B.T) @ B  # project the whole corpus subspace out
 
     Xc_e = (Xw_e * s) @ V.T  # un-whiten back to ambient space
     return Xc_e + mu
@@ -85,22 +90,23 @@ def _harmony(emb, corpus):
 
 def inlp(emb, corpus, k):
     """Iterative Nullspace Projection: project out the top-k corpus-discriminative linear
-    directions (each step fits a logistic classifier and removes its weight normal). A
-    higher-rank generalization of the rank-1 LEACE edit, used by the rank diagnostic to see
-    how much of the corpus separation is linear-rank-k (erasable) vs irreducible."""
+    directions. Generalized to K >= 2 classes — each step fits a multinomial logistic
+    classifier and removes the single most discriminative direction (the leading right
+    singular vector of its K×d coefficient matrix). A higher-rank generalization of the
+    LEACE edit, used by the rank diagnostic to see how much of the corpus separation is
+    linear-rank-k (erasable, expected <= K−1) vs irreducible (nonlinear / genuine)."""
     from sklearn.linear_model import LogisticRegression
 
     emb = np.asarray(emb, dtype=np.float64)
     corpus = np.asarray(corpus)
     mu = emb.mean(0, keepdims=True)
     Xc = emb - mu
-    y = (corpus == sorted(set(corpus.tolist()))[0]).astype(int)
     for _ in range(k):
-        clf = LogisticRegression(max_iter=2000).fit(Xc, y)
-        w = clf.coef_[0].astype(np.float64)
-        n = np.linalg.norm(w)
-        if n < 1e-12:
+        clf = LogisticRegression(max_iter=2000).fit(Xc, corpus)
+        C = np.atleast_2d(clf.coef_).astype(np.float64)  # (K or 1, d)
+        _, sv, Wt = np.linalg.svd(C, full_matrices=False)
+        if sv[0] < 1e-12:
             break
-        w /= n
-        Xc = Xc - np.outer(Xc @ w, w)  # project out direction w
+        w = Wt[0] / (np.linalg.norm(Wt[0]) + 1e-12)
+        Xc = Xc - np.outer(Xc @ w, w)  # project out the top discriminative direction
     return Xc + mu

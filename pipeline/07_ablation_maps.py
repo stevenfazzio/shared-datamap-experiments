@@ -28,7 +28,7 @@ MAX_DOC_CHARS = 2_000
 def main():
     df = pd.read_parquet(ENTITIES_PARQUET).reset_index(drop=True)
     documents = df["text"].str.slice(0, MAX_DOC_CHARS).tolist()
-    ca, cb = sorted(df["corpus"].unique())
+    corpora = sorted(df["corpus"].unique())
 
     for method in METHODS_TO_MAP:
         mdir = EXP_DIR / method
@@ -49,7 +49,7 @@ def main():
             df["url"].to_numpy(),
             df["char_len"].to_numpy(),
             f"{DATASET_TITLE} — {method.upper()}",
-            f"{ca} vs {cb} — corpus signal removed via {method}",
+            f"{' / '.join(corpora)} — corpus signal removed via {method}",
             mdir / "map.html",
         )
         print(f"  wrote {mdir / 'map.html'}")
