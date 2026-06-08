@@ -92,3 +92,35 @@ def aptness_hit_rate(cross_nn, known=KNOWN):
             hits += cross_nn[g] in acceptable
     rate = hits / checked if checked else float("nan")
     return rate, hits, checked
+
+
+def cross_modal_retrieval(emb, modality, pair_id):
+    """Paired cross-modal retrieval (the multimodal readout). For each point, restrict
+    candidates to the OTHER modality and check whether its paired point (same pair_id) is
+    the nearest; report recall@1 and MRR per direction. Once the modality gap is erased, an
+    entity's two representations should retrieve each other."""
+    u = _unit(emb)
+    sim = u @ u.T
+    modality = np.asarray(modality)
+    pair_id = np.asarray(pair_id)
+    mods = sorted(set(modality.tolist()))
+    res = {}
+    for src, tgt in [(mods[0], mods[1]), (mods[1], mods[0])]:
+        si = np.where(modality == src)[0]
+        ti = np.where(modality == tgt)[0]
+        tgt_of = {pair_id[j]: j for j in ti}
+        r1 = mrr = n = 0
+        for i in si:
+            j = tgt_of.get(pair_id[i])
+            if j is None:
+                continue
+            n += 1
+            rank = int(np.sum(sim[i, ti] > sim[i, j])) + 1  # rank of the true pair (1 = best)
+            r1 += rank == 1
+            mrr += 1.0 / rank
+        res[f"{src}->{tgt}"] = {
+            "recall@1": r1 / n if n else float("nan"),
+            "mrr": mrr / n if n else float("nan"),
+            "n": int(n),
+        }
+    return res

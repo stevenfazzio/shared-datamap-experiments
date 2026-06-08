@@ -189,6 +189,22 @@ DATASETS = {
         # ~190-point map: between the greek_norse pilot (100) and marvel_dc (2000).
         "toponymy": {"min_clusters": 4, "base_min_cluster_size": 5, "min_samples": 3},
     },
+    "pantheons_mm": {
+        # Modality experiment: the same myth figures embedded twice (image vs text); the
+        # "corpus" we erase is MODALITY, not pantheon. Built by 00c_build_multimodal.py.
+        "colors": {"image": "#ff7f00", "text": "#377eb8"},  # image=orange, text=blue
+        "object_description": (
+            "mythological figures, each represented both as an artwork (image) and as encyclopedic text"
+        ),
+        "corpus_description": (
+            "the same set of mythological figures embedded two ways — as a depiction in "
+            "art (image) and as a Wikipedia description (text)"
+        ),
+        "title": "Myth figures: image × text",
+        "known": {},  # no cross-modal analogue ground truth; validated by cross-modal retrieval
+        # ~396-point map (up to 198 figures x 2 modalities).
+        "toponymy": {"min_clusters": 4, "base_min_cluster_size": 8, "min_samples": 3},
+    },
 }
 
 # Name-stripped variant of marvel_dc (same settings; entities derived by 00b_strip_names.py

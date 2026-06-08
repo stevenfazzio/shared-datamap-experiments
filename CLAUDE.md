@@ -42,6 +42,13 @@ DATASET=pantheons uv run python pipeline/01_embed.py
 DATASET=pantheons uv run python pipeline/06_ablation.py
 DATASET=pantheons uv run python pipeline/07_ablation_maps.py
 DATASET=pantheons uv run python pipeline/08_rank_diagnostic.py   # INLP sweep: signal is rank-(K-1)=3
+
+# Myth figures image × text (multimodal; the erased "corpus" is MODALITY). Derives from pantheons.
+DATASET=pantheons_mm uv run python pipeline/00c_build_multimodal.py   # fetch+embed lead images, stack
+DATASET=pantheons_mm uv run python pipeline/06_ablation.py
+DATASET=pantheons_mm uv run python pipeline/07_ablation_maps.py
+DATASET=pantheons_mm uv run python pipeline/08_rank_diagnostic.py
+DATASET=pantheons_mm uv run python pipeline/09_multimodal_eval.py   # cross-modal retrieval
 ```
 
 (`make pipeline` runs the greek_norse single-method path only.) **View a map:** serve the
@@ -57,6 +64,9 @@ datamapplot `offline_mode=True`, so the HTML is self-contained (works without a 
 - **00_fetch_fandom.py** — marvel_dc: Fandom character prose; roster by page length (ns0),
   prose from the `{{Character Template}}` params via `mwparserfromhell`.
 - **00b_strip_names.py** — marvel_dc_anon: strip character names from marvel_dc text.
+- **00c_build_multimodal.py** — pantheons_mm: fetch each figure's Wikipedia lead image (batched
+  `pageimages` + continuation; download with backoff), embed via embed-v4.0 `input_type=image`, stack
+  with the reused text embeddings → 2N points labeled by modality (+`pair_id`, +`pantheon` columns).
 - **01_embed.py** — Cohere `embed-v4.0`, `input_type=clustering`, 1024-d → `embeddings.npz`.
 - **02_reduce_umap.py** — UMAP → `umap_coords.npz` (n_neighbors=15, min_dist=0.05, cosine, seed 42).
 - **03_label_topics.py / topic_labeling.py** — Toponymy + Opus-4.8 namer → `labels.parquet`.
@@ -66,14 +76,18 @@ datamapplot `offline_mode=True`, so the HTML is self-contained (works without a 
   + `experiments/<method>/`. `integrations.py` holds the methods.
 - **07_ablation_maps.py** — render a map per integration method.
 - **08_rank_diagnostic.py** — INLP rank-k sweep (how much corpus separation is linear vs irreducible).
+- **09_multimodal_eval.py** — pantheons_mm: cross-modal retrieval (recall@1/MRR, image↔text) per method.
 
 Artifacts are row-aligned by an `id` column; entities schema: `id, name, corpus, title, url,
 text, char_len`. Writes are atomic (tmp + `os.replace`); see `running-data-pipelines`.
 
 ## Conventions & gotchas
 
-- **Cohere embed-v4.0 is multimodal** (text + images, shared space) — relevant for the planned
-  multimodal experiment; no new embedder needed.
+- **Cohere embed-v4.0 is multimodal** (text + images, one shared space): embed images via
+  `co.embed(images=[<base64 data URI>], input_type="image", ...)` — same 1024-d space as text.
+- **Wikipedia lead images** (`prop=pageimages`): batched queries silently cap thumbnails per request —
+  page through the `picontinue` token (~4 requests for ~200 titles). And `upload.wikimedia.org` throttles
+  bursty downloads — space them (~5s) with backoff; the throttle clears on cooldown, isolated requests are fine.
 - **DataMapPlot label layers are finest-first** (semantic-github-map's "coarsest first" comment
   is wrong; taskmaster-map is the correct reference).
 - **Opus 4.8 namer**: the stock `AsyncAnthropicNamer` passes `temperature`, which Opus 4.7/4.8
@@ -103,15 +117,22 @@ CSLS is subsumed by integration. Input text dominates: names contaminate matchin
 (INLP recoverability collapses 1.00→0.005 at k=3; closed-form multiclass LEACE — erasing the (K−1)-dim
 class-mean subspace — removes precisely it), again **LEACE ≈ centering ≥ Harmony**, regions name as
 cross-pantheon archetypes (Hades↔Hel↔Anubis↔Yama), residual is genuine (a Vishnu-avatar pocket; Horus a hub).
+**Multimodal (`pantheons_mm`, image × text) BREAKS the pattern**: the modality gap is largely
+**nonlinear**, unlike the low-rank-linear corpus signal. Linear erasure (center/LEACE/INLP) kills modality
+recoverability by rank ~2 but mixing plateaus at ~half-merged (0.25 of 0.50) through k=64 — no linear
+subspace interleaves the modalities; only Harmony (nonlinear) merges the cones (mixing 0.48). On the map,
+raw shows color-pure per-figure clumps (image vs text split); Harmony intermixes them. For cross-modal
+**retrieval**, per-modality centering is best (recall@1 ~0.44 vs ~0.35 raw); Harmony's merge doesn't help
+(distorts content). N=94 (image fetch throttled to the most-documented figures), so preliminary.
 
 ## Status & next
 
-Done: greek_norse (pilot), marvel_dc (+ marvel_dc_anon), pantheons (N=4 mythologies; rank-(K−1)
-confirmed). **Next:** (1) multimodal — paintings (images) × film/book summaries (text), testing
-whether rank-1 erasure closes the CLIP-style modality gap (Cohere embed-v4.0 is already multimodal);
+Done: greek_norse (pilot), marvel_dc (+ marvel_dc_anon), pantheons (N=4; rank-(K−1)), pantheons_mm
+(image × text; modality gap is nonlinear). **Next:** (1) expand pantheons_mm to the full ~170 figures
+once the image-fetch rate limit is fresh (currently N=94); maybe test text `input_type` sensitivity;
 (2) write up + publish via GitHub Pages, possibly share to the TutteInstitute/toponymy discussions.
 
 ## Env
 
 Keys from the shell env: `CO_API_KEY` (Cohere), `ANTHROPIC_API_KEY` (Toponymy naming).
-`data/` is git-ignored; `uv.lock` is committed. Nothing is committed yet.
+`data/` is git-ignored; `uv.lock` is committed.
