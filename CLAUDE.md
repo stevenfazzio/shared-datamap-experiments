@@ -49,6 +49,10 @@ DATASET=pantheons_mm uv run python pipeline/06_ablation.py
 DATASET=pantheons_mm uv run python pipeline/07_ablation_maps.py
 DATASET=pantheons_mm uv run python pipeline/08_rank_diagnostic.py
 DATASET=pantheons_mm uv run python pipeline/09_multimodal_eval.py   # cross-modal retrieval
+DATASET=pantheons_mm uv run python pipeline/10_dim_diagnostic.py    # d<n recoverability (Matryoshka truncation)
+# input_type A/B (reuses pantheons_mm images via MM_SKIP_FETCH): text re-embedded with search_query
+MM_SKIP_FETCH=1 DATASET=pantheons_mm_sq uv run python pipeline/00c_build_multimodal.py
+DATASET=pantheons_mm_sq uv run python pipeline/06_ablation.py       # then 08, 09 as above
 ```
 
 (`make pipeline` runs the greek_norse single-method path only.) **View a map:** serve the
@@ -64,9 +68,11 @@ datamapplot `offline_mode=True`, so the HTML is self-contained (works without a 
 - **00_fetch_fandom.py** — marvel_dc: Fandom character prose; roster by page length (ns0),
   prose from the `{{Character Template}}` params via `mwparserfromhell`.
 - **00b_strip_names.py** — marvel_dc_anon: strip character names from marvel_dc text.
-- **00c_build_multimodal.py** — pantheons_mm: fetch each figure's Wikipedia lead image (batched
-  `pageimages` + continuation; download with backoff), embed via embed-v4.0 `input_type=image`, stack
-  with the reused text embeddings → 2N points labeled by modality (+`pair_id`, +`pantheon` columns).
+- **00c_build_multimodal.py** — pantheons_mm / pantheons_mm_sq: fetch each figure's Wikipedia lead image
+  (batched `pageimages` + continuation; backed-off downloads), embed via embed-v4.0 `input_type=image`,
+  stack with text (input_type from the dataset config) → 2N points labeled by modality (+`pair_id`,
+  +`pantheon`). Image URIs + embeddings cache under `data/pantheons/`, reused across variants
+  (`MM_SKIP_FETCH=1` skips fetching entirely).
 - **01_embed.py** — Cohere `embed-v4.0`, `input_type=clustering`, 1024-d → `embeddings.npz`.
 - **02_reduce_umap.py** — UMAP → `umap_coords.npz` (n_neighbors=15, min_dist=0.05, cosine, seed 42).
 - **03_label_topics.py / topic_labeling.py** — Toponymy + Opus-4.8 namer → `labels.parquet`.
@@ -77,6 +83,8 @@ datamapplot `offline_mode=True`, so the HTML is self-contained (works without a 
 - **07_ablation_maps.py** — render a map per integration method.
 - **08_rank_diagnostic.py** — INLP rank-k sweep (how much corpus separation is linear vs irreducible).
 - **09_multimodal_eval.py** — pantheons_mm: cross-modal retrieval (recall@1/MRR, image↔text) per method.
+- **10_dim_diagnostic.py** — sweep output dim (Matryoshka prefix truncation of the 1024-d embeddings);
+  reports mixing + recoverability per method, so recoverability is readable where d<n (pantheons_mm: 312 pts).
 
 Artifacts are row-aligned by an `id` column; entities schema: `id, name, corpus, title, url,
 text, char_len`. Writes are atomic (tmp + `os.replace`); see `running-data-pipelines`.
@@ -85,6 +93,9 @@ text, char_len`. Writes are atomic (tmp + `os.replace`); see `running-data-pipel
 
 - **Cohere embed-v4.0 is multimodal** (text + images, one shared space): embed images via
   `co.embed(images=[<base64 data URI>], input_type="image", ...)` — same 1024-d space as text.
+  Text `input_type` mostly aliases: **clustering == search_document == classification** (cos 1.0); only
+  **search_query** differs (cos ~0.97 on long text). `output_dimension` is **Matryoshka** (a renormalized
+  prefix), so truncating 1024→256 == native 256-d (cos 1.0) — used for the d<n recoverability diagnostic.
 - **Wikipedia lead images** (`prop=pageimages`): batched queries silently cap thumbnails per request —
   page through the `picontinue` token (~4 requests for ~200 titles). And `upload.wikimedia.org` throttles
   bursty downloads — space them (~5s) with backoff; the throttle clears on cooldown, isolated requests are fine.
@@ -119,18 +130,22 @@ class-mean subspace — removes precisely it), again **LEACE ≈ centering ≥ H
 cross-pantheon archetypes (Hades↔Hel↔Anubis↔Yama), residual is genuine (a Vishnu-avatar pocket; Horus a hub).
 **Multimodal (`pantheons_mm`, image × text) BREAKS the pattern**: the modality gap is largely
 **nonlinear**, unlike the low-rank-linear corpus signal. Linear erasure (center/LEACE/INLP) kills modality
-recoverability by rank ~2 but mixing plateaus at ~half-merged (0.25 of 0.50) through k=64 — no linear
-subspace interleaves the modalities; only Harmony (nonlinear) merges the cones (mixing 0.48). On the map,
-raw shows color-pure per-figure clumps (image vs text split); Harmony intermixes them. For cross-modal
-**retrieval**, per-modality centering is best (recall@1 ~0.44 vs ~0.35 raw); Harmony's merge doesn't help
-(distorts content). N=94 (image fetch throttled to the most-documented figures), so preliminary.
+recoverability by rank ~2 but mixing plateaus at ~half-merged (~0.23 of 0.50) through k=64 — no linear
+subspace interleaves the modalities; only Harmony (nonlinear) merges the cones (mixing ~0.42). On the map,
+raw shows color-pure per-figure clumps (image vs text split); Harmony intermixes them. **Robust across three
+checks**: full **N=156** (stronger, not weaker), **d=256** (Matryoshka-truncated so d<n → recoverability is
+trustworthy, and raw stays 0.99: modality is genuinely linearly separable — a real mean-offset, not a d≫n
+artifact), and **input_type** (`search_query` text gives the same gap). The gap = a real linear mean-offset
+(centering kills recoverability) + nonlinear manifold structure (only Harmony interleaves) — linear
+*separability* ≠ linear *interleavability*. Cross-modal **retrieval** is modest (~0.25) with small method
+differences (the earlier N=94 "centering wins big" was small-N inflation; search_query helps slightly).
 
 ## Status & next
 
 Done: greek_norse (pilot), marvel_dc (+ marvel_dc_anon), pantheons (N=4; rank-(K−1)), pantheons_mm
-(image × text; modality gap is nonlinear). **Next:** (1) expand pantheons_mm to the full ~170 figures
-once the image-fetch rate limit is fresh (currently N=94); maybe test text `input_type` sensitivity;
-(2) write up + publish via GitHub Pages, possibly share to the TutteInstitute/toponymy discussions.
+(image × text; modality gap is nonlinear — confirmed across N=156 / d=256 / input_type, via
+`pantheons_mm_sq` + `10_dim_diagnostic.py`). **Next:** write up + publish via GitHub Pages, possibly
+share to the TutteInstitute/toponymy discussions.
 
 ## Env
 

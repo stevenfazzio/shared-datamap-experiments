@@ -202,6 +202,7 @@ DATASETS = {
         ),
         "title": "Myth figures: image × text",
         "known": {},  # no cross-modal analogue ground truth; validated by cross-modal retrieval
+        "text_input_type": "clustering",  # text side embedded with this input_type
         # ~396-point map (up to 198 figures x 2 modalities).
         "toponymy": {"min_clusters": 4, "base_min_cluster_size": 8, "min_samples": 3},
     },
@@ -210,3 +211,13 @@ DATASETS = {
 # Name-stripped variant of marvel_dc (same settings; entities derived by 00b_strip_names.py
 # from data/marvel_dc/entities.parquet, with character names removed from the embed text).
 DATASETS["marvel_dc_anon"] = {**DATASETS["marvel_dc"], "title": "Marvel × DC (names stripped)"}
+
+# input_type A/B: same images + figures as pantheons_mm, text re-embedded with search_query
+# (the one text input_type that actually differs — in embed-v4.0 clustering == search_document
+# == classification, only search_query is distinct, cos ~0.78) to test whether the modality gap
+# is an input_type artifact. search_query is also the retrieval-appropriate "query" encoding.
+DATASETS["pantheons_mm_sq"] = {
+    **DATASETS["pantheons_mm"],
+    "title": "Myth figures: image × text (search_query)",
+    "text_input_type": "search_query",
+}

@@ -6,11 +6,14 @@ Wikipedia lead image, embed it with embed-v4.0 (input_type="image"), and pair it
 figure's already-computed text embedding. Output is 2N row-aligned points (a text row and
 an image row per figure), so 06/07/08 run unchanged with corpus = modality.
 
-Reads:  data/pantheons/{entities.parquet, embeddings.npz}   (text side, reused)
-Writes: data/pantheons_mm/{entities.parquet (2N rows; +pair_id,+pantheon), embeddings.npz}
-        data/pantheons_mm/image_uris.json   (resumable cache of fetched lead images)
+Reads:  data/pantheons/{entities.parquet, embeddings.npz}   (figures + clustering text)
+Writes: data/<DATASET>/{entities.parquet (2N rows; +pair_id,+pantheon), embeddings.npz}
+Shared under data/pantheons/ (reused across variants): image_uris.json (downloaded
+thumbnails) + image_embeddings.npz (image side embedded once).
 
-Run with DATASET=pantheons_mm.
+Run with DATASET=pantheons_mm (text=clustering) or pantheons_mm_sd (text=search_document) —
+the text input_type comes from the dataset config; images are embedded once and reused, so
+the input_type A/B costs only a text re-embed.
 """
 
 import base64
@@ -25,10 +28,11 @@ import requests
 from config import (
     CO_API_KEY,
     COHERE_EMBED_MODEL,
+    COHERE_INPUT_TYPE,
     COHERE_OUTPUT_DIM,
-    DATA_DIR,
     EMBEDDINGS_NPZ,
     ENTITIES_PARQUET,
+    MM_TEXT_INPUT_TYPE,
     PROJECT_ROOT,
     WIKIPEDIA_API,
     WIKIPEDIA_USER_AGENT,
@@ -36,9 +40,10 @@ from config import (
 from tqdm import tqdm
 
 SRC = PROJECT_ROOT / "data" / "pantheons"
-CACHE = DATA_DIR / "image_uris.json"
+CACHE = SRC / "image_uris.json"  # shared across mm variants (downloaded thumbnails)
+IMG_EMB_NPZ = SRC / "image_embeddings.npz"  # shared image embeddings, keyed by figure id
 IMG_BATCH = 32
-MAX_FIGURES = 110  # cap to the most-documented figures (best images); stays under the throttle
+MAX_FIGURES = 250  # effectively all (~170 of 198 figures have a usable lead image)
 SUPPORTED = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 
@@ -112,6 +117,9 @@ def load_or_fetch_uris(df):
     so throttle/transient failures retry on the next run instead of sticking as None."""
     cache = json.loads(CACHE.read_text()) if CACHE.exists() else {}
     cache = {k: v for k, v in cache.items() if v}  # keep successes; drop any stale None
+    if os.environ.get("MM_SKIP_FETCH"):  # variants reuse the primary build's images (no new fetch)
+        print(f"MM_SKIP_FETCH set; using {len(cache)} cached images")
+        return cache
     todo = df[~df["id"].isin(cache)].reset_index(drop=True)
     if len(todo):
         if cache:
@@ -125,7 +133,7 @@ def load_or_fetch_uris(df):
                 uri = download_uri(session, url)
                 if uri:
                     cache[r.id] = uri
-            time.sleep(5.0)  # upload.wikimedia throttles bursts; isolated requests are fine
+                time.sleep(5.0)  # pace only real downloads (upload.wikimedia throttles bursts)
             if k % 25 == 0:
                 CACHE.write_text(json.dumps(cache))
         CACHE.write_text(json.dumps(cache))
@@ -147,21 +155,59 @@ def embed_images(uris):
     return np.asarray(out, dtype=np.float32)
 
 
+def load_or_embed_images(ids, uris):
+    """Image embeddings for `ids`, reusing IMG_EMB_NPZ (shared across variants); embed and
+    merge-save the rest. Keeps the image side embedded once, even across input_type variants."""
+    cache = {}
+    if IMG_EMB_NPZ.exists():
+        d = np.load(IMG_EMB_NPZ, allow_pickle=True)
+        cache = {i: v for i, v in zip(list(d["id"]), d["emb"])}
+    todo = [i for i in ids if i not in cache]
+    if todo:
+        for i, v in zip(todo, embed_images([uris[i] for i in todo])):
+            cache[i] = v
+        all_ids = list(cache)
+        all_emb = np.asarray([cache[i] for i in all_ids], dtype=np.float32)
+        tmp = str(IMG_EMB_NPZ) + ".tmp.npz"
+        np.savez(tmp, emb=all_emb, id=np.array(all_ids))
+        os.replace(tmp, IMG_EMB_NPZ)
+    return np.asarray([cache[i] for i in ids], dtype=np.float32)
+
+
+def text_embeddings(kept, input_type):
+    """Text embeddings for kept figures. clustering -> reuse pantheons/embeddings.npz; any
+    other input_type -> re-embed the text fresh (the input_type A/B knob)."""
+    if input_type == COHERE_INPUT_TYPE:
+        td = np.load(SRC / "embeddings.npz", allow_pickle=True)
+        tpos = {i: k for k, i in enumerate(list(td["id"]))}
+        return td["emb"][[tpos[i] for i in kept["id"]]].astype(np.float32)
+    print(f"re-embedding text with input_type={input_type!r}")
+    co = cohere.ClientV2(api_key=CO_API_KEY)
+    texts, out = kept["text"].tolist(), []
+    for i in tqdm(range(0, len(texts), 96), desc="embedding text"):
+        resp = co.embed(
+            texts=texts[i : i + 96],
+            model=COHERE_EMBED_MODEL,
+            input_type=input_type,
+            embedding_types=["float"],
+            output_dimension=COHERE_OUTPUT_DIM,
+        )
+        out.extend(resp.embeddings.float_)
+    return np.asarray(out, dtype=np.float32)
+
+
 def main():
     src = pd.read_parquet(SRC / "entities.parquet").reset_index(drop=True)
     src = src.nlargest(MAX_FIGURES, "char_len").reset_index(drop=True)
-    print(f"source: {len(src)} most-documented pantheons figures (capped at {MAX_FIGURES})")
+    print(f"source: {len(src)} pantheons figures")
 
     uris = load_or_fetch_uris(src)
     kept = src[src["id"].map(lambda i: bool(uris.get(i)))].reset_index(drop=True)
     missing = sorted(set(src["name"]) - set(kept["name"]))
     print(f"images: {len(kept)}/{len(src)} usable" + (f"  | dropped: {missing}" if missing else ""))
 
-    # reuse the text embeddings (row-aligned to kept by id)
-    td = np.load(SRC / "embeddings.npz", allow_pickle=True)
-    tpos = {i: k for k, i in enumerate(list(td["id"]))}
-    text_emb = td["emb"][[tpos[i] for i in kept["id"]]].astype(np.float32)
-    img_emb = embed_images([uris[i] for i in kept["id"]])
+    text_emb = text_embeddings(kept, MM_TEXT_INPUT_TYPE)
+    img_emb = load_or_embed_images(kept["id"].tolist(), uris)
 
     # interleave a text row and an image row per figure; image row's `text` = the figure's
     # text so Toponymy has content to name regions with (position still comes from the image

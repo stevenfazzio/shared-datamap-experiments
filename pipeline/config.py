@@ -64,3 +64,5 @@ OBJECT_DESCRIPTION = _DS["object_description"]
 CORPUS_DESCRIPTION = _DS["corpus_description"]
 DATASET_TITLE = _DS["title"]
 KNOWN = _DS["known"]
+# Multimodal text-side input_type (pantheons_mm variants); defaults to the standard text type.
+MM_TEXT_INPUT_TYPE = _DS.get("text_input_type", COHERE_INPUT_TYPE)
