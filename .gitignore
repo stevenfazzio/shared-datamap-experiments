@@ -1,0 +1,20 @@
+# Data artifacts (expensive to regenerate — never commit)
+data/
+*.npz
+*.parquet
+*.joblib
+
+# Env / secrets
+.env
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# OS
+.DS_Store
+
+# Note: uv.lock is committed (house convention) for reproducibility.
