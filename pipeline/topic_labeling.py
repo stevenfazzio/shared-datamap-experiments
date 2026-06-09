@@ -12,8 +12,11 @@ removed (400, fail-fast). OpusAnthropicNamer drops it.
 
 from __future__ import annotations
 
+import os
+
 import nest_asyncio
 import numpy as np
+import pandas as pd
 from config import (
     ANTHROPIC_API_KEY,
     ANTHROPIC_MAX_CONCURRENCY,
@@ -53,8 +56,15 @@ class OpusAnthropicNamer(AsyncAnthropicNamer):
         return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
 
 
-def label_regions(documents, embeddings, coords, object_description, corpus_description, seed=42, log=True):
-    """Fit Toponymy and return per-layer per-document label vectors, FINEST FIRST."""
+def label_regions(
+    documents, embeddings, coords, object_description, corpus_description, seed=42, log=True, clusterer="toponymy"
+):
+    """Fit Toponymy and return per-layer per-document label vectors, FINEST FIRST.
+
+    clusterer: "toponymy" (default) clusters the 2D UMAP `coords` (the map substrate);
+    "evoc" clusters the native high-D `embeddings` instead (EVoC runs its own internal
+    reduction in .fit(embedding_vectors)) — the high-D lens for stage 11's 2D-vs-high-D
+    delta. "evoc" needs Toponymy's optional `evoc` extra (uv add evoc)."""
     from toponymy import Toponymy, ToponymyClusterer
     from toponymy.embedding_wrappers import CohereEmbedder
 
@@ -64,15 +74,29 @@ def label_regions(documents, embeddings, coords, object_description, corpus_desc
         max_concurrent_requests=ANTHROPIC_MAX_CONCURRENCY,
     )
     embedder = CohereEmbedder(api_key=CO_API_KEY, model=COHERE_EMBED_MODEL)
-    clusterer = ToponymyClusterer(
-        min_clusters=TOPONYMY_MIN_CLUSTERS,
-        base_min_cluster_size=TOPONYMY_BASE_MIN_CLUSTER_SIZE,
-        min_samples=TOPONYMY_MIN_SAMPLES,
-    )
+    if clusterer == "evoc":
+        # High-D lens (#2): EVoC clusters the native 1024-d embeddings (it runs its own
+        # internal reduction in .fit(embedding_vectors)); ToponymyClusterer would cluster the
+        # 2D UMAP coords. So the named regions reflect high-D structure, not the UMAP
+        # projection — `coords` below is then only Toponymy's (unrendered) layout substrate.
+        # EVoCClusterer is gated behind Toponymy's optional `evoc` extra (uv add evoc).
+        from toponymy.clustering import EVoCClusterer
+
+        clusterer_obj = EVoCClusterer(
+            min_clusters=TOPONYMY_MIN_CLUSTERS,
+            base_min_cluster_size=TOPONYMY_BASE_MIN_CLUSTER_SIZE,
+            min_samples=TOPONYMY_MIN_SAMPLES,
+        )
+    else:
+        clusterer_obj = ToponymyClusterer(
+            min_clusters=TOPONYMY_MIN_CLUSTERS,
+            base_min_cluster_size=TOPONYMY_BASE_MIN_CLUSTER_SIZE,
+            min_samples=TOPONYMY_MIN_SAMPLES,
+        )
     topic_model = Toponymy(
         llm_wrapper=llm,
         text_embedding_model=embedder,
-        clusterer=clusterer,
+        clusterer=clusterer_obj,
         object_description=object_description,
         corpus_description=corpus_description,
         lowest_detail_level=0.5,
@@ -88,3 +112,15 @@ def label_regions(documents, embeddings, coords, object_description, corpus_desc
             uniq = sorted({n for n in names.tolist() if n != "Unlabelled"})
             print(f"    layer {i}: {len(uniq)} regions, {named}/{len(names)} named -> {uniq[:8]}")
     return layers
+
+
+def save_labels(path, ids, layers):
+    """Persist per-layer Toponymy label vectors as a parquet (id + label_layer_0..N, finest
+    first), atomically. Mirrors stage 03's labels.parquet schema so the baseline and the
+    per-method ablation labels are read identically by the metrics stage."""
+    out = {"id": np.asarray(ids)}
+    for i, vec in enumerate(layers):
+        out[f"label_layer_{i}"] = np.asarray(vec, dtype=object)
+    tmp = str(path) + ".tmp"
+    pd.DataFrame(out).to_parquet(tmp, index=False)
+    os.replace(tmp, path)

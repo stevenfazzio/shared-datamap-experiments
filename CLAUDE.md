@@ -53,6 +53,11 @@ DATASET=pantheons_mm uv run python pipeline/10_dim_diagnostic.py    # d<n recove
 # input_type A/B (reuses pantheons_mm images via MM_SKIP_FETCH): text re-embedded with search_query
 MM_SKIP_FETCH=1 DATASET=pantheons_mm_sq uv run python pipeline/00c_build_multimodal.py
 DATASET=pantheons_mm_sq uv run python pipeline/06_ablation.py       # then 08, 09 as above
+
+# Toponymy-label metrics (run AFTER 07 for any ablation dataset; 07 now persists per-method labels.parquet).
+DATASET=<ds> uv run python pipeline/11_label_metrics.py    # #1 per-region mixing depth curve + #3 seam -> label_metrics.{json,html}
+DATASET=<ds> uv run python pipeline/11b_label_routing.py   # #4 label grounding / routing accuracy -> label_routing.json
+DATASET=pantheons uv run python pipeline/07b_highd_labels.py  # #2 EVoC high-D labels (needs `evoc`); re-run 11 for the 2D-vs-high-D delta
 ```
 
 (`make pipeline` runs the greek_norse single-method path only.) **View a map:** serve the
@@ -80,11 +85,23 @@ datamapplot `offline_mode=True`, so the HTML is self-contained (works without a 
 - **05_evaluate.py / metrics.py** — baseline go/no-go (cross-corpus NN aptness, mixing, recoverability).
 - **06_ablation.py** — integrate raw/center/leace/harmony → UMAP → metrics → `ablation.json`
   + `experiments/<method>/`. `integrations.py` holds the methods.
-- **07_ablation_maps.py** — render a map per integration method.
+- **07_ablation_maps.py** — render a map per integration method; **also persists per-method
+  `labels.parquet`** (id + label_layer_0..N, finest first) via `save_labels`, for stages 11/11b.
+- **07b_highd_labels.py** — **#2 high-D lens**: EVoC region labels (`labels_highd.parquet`) clustering the
+  native 1024-d embeddings (vs 07's 2D-UMAP substrate) via `EVoCClusterer`. No map (membership only); needs
+  the optional `evoc` package. Stage 11 reports the 2D-vs-high-D mixing delta when this file is present.
 - **08_rank_diagnostic.py** — INLP rank-k sweep (how much corpus separation is linear vs irreducible).
 - **09_multimodal_eval.py** — pantheons_mm: cross-modal retrieval (recall@1/MRR, image↔text) per method.
 - **10_dim_diagnostic.py** — sweep output dim (Matryoshka prefix truncation of the 1024-d embeddings);
   reports mixing + recoverability per method, so recoverability is readable where d<n (pantheons_mm: 312 pts).
+- **11_label_metrics.py** — Toponymy-label metrics from stage-07/07b labels: **#1** per-region cross-corpus
+  mixing (Gini-Simpson, `metrics.per_region_mixing`, same (K−1)/K scale as kNN) + purity-vs-depth curve +
+  coverage + named-region receipts; **#3** structural table + where unnamed space sits (the corpus seam, via
+  `per_point_cross_corpus`). Writes `label_metrics.{json,html}` (plotly depth curve). **#2** 2D-vs-high-D
+  delta when `labels_highd.parquet` exists. Always read mixing against coverage.
+- **11b_label_routing.py** — **#4** label grounding: routing accuracy (in the ORIGINAL Cohere space, does
+  each named doc's own region label win vs siblings?) + inter-label redundancy, per method/layer →
+  `label_routing.json`. Certifies the receipts; does not rank methods (label quality is a namer property).
 
 Artifacts are row-aligned by an `id` column; entities schema: `id, name, corpus, title, url,
 text, char_len`. Writes are atomic (tmp + `os.replace`); see `running-data-pipelines`.
@@ -109,6 +126,11 @@ text, char_len`. Writes are atomic (tmp + `os.replace`); see `running-data-pipel
 - **Fandom APIs** differ from Wikipedia (no TextExtracts; prose in template params; tag-URL
   escaping `.`→`*d*`/`&`→`*a*`; Mostlinkedpages disabled). See the `fandom-mediawiki-extraction`
   memory.
+- **EVoC clusterer** (`EVoCClusterer`, the 07b high-D lens) is defined in `toponymy/clustering.py` but
+  inside a `try: import evoc` block — so it silently fails to bind until the optional `evoc` package is
+  installed (`uv add evoc`); a direct import or `dir()` then shows nothing. **Not** a Toponymy-version
+  limitation. `EVoCClusterer.fit` clusters the high-D `embedding_vectors` and ignores `clusterable_vectors`
+  (so `label_regions(..., clusterer="evoc")` still passes the 2D coords; they're unused for clustering).
 
 ## Metrics (how to read)
 
@@ -117,6 +139,12 @@ text, char_len`. Writes are atomic (tmp + `os.replace`); see `running-data-pipel
 2. **Linear recoverability** — CV accuracy predicting corpus; only reliable when **d < n**
    (unreliable in the ~100-pt pilot where d=1024 ≫ n).
 3. **Aptness vs KNOWN analogues** — top-1 cross-corpus NN, under cosine and CSLS.
+4. **Per-region mixing** (label layer, stage 11) — Gini-Simpson corpus impurity within each NAMED region,
+   size-weighted over named points; same (K−1)/K scale as kNN mixing. Always read against COVERAGE (a method
+   can fake high mixing by naming only its blended core and leaving pure fringes Unlabelled). The per-layer
+   sequence (finest→coarsest) is the **depth curve**.
+5. **Label routing accuracy** (stage 11b) — does each named doc's own region label win in the original Cohere
+   space, vs the 1/n_regions chance line? Certifies label grounding; does not rank methods.
 
 ## Findings so far (see memory for detail)
 
@@ -140,12 +168,24 @@ artifact), and **input_type** (`search_query` text gives the same gap). The gap 
 *separability* ≠ linear *interleavability*. Cross-modal **retrieval** is modest (~0.25) with small method
 differences (the earlier N=94 "centering wins big" was small-N inflation; search_query helps slightly).
 
+**Toponymy-label metrics (stages 07b/11/11b) measure the integration on Toponymy's named-region output**
+(built to tie the analysis to Toponymy itself, for that audience). **#1 per-region mixing**
+(`metrics.per_region_mixing` — Gini-Simpson corpus impurity within each named region, same (K−1)/K scale as
+kNN mixing, read against coverage) reproduces `LEACE ≈ centering ≥/≈ Harmony` on the named regions with
+cross-corpus archetype receipts, and the depth curve re-expresses the multimodal nonlinearity as scale (only
+Harmony mixes at the fine layer). The **#2 EVoC high-D lens**, **#3** unnamed-space seam, and **#4** label
+routing corroborate rather than add (integrated merges are real in native 1024-d, so the maps don't overstate
+them — the one 2D inflation is raw multimodal, Δ+.13; labels grounded). Per-dataset detail in
+`label_metrics.{json,html}` + `label_routing.json`.
+
 ## Status & next
 
 Done: greek_norse (pilot), marvel_dc (+ marvel_dc_anon), pantheons (N=4; rank-(K−1)), pantheons_mm
 (image × text; modality gap is nonlinear — confirmed across N=156 / d=256 / input_type, via
-`pantheons_mm_sq` + `10_dim_diagnostic.py`). **Next:** write up + publish via GitHub Pages, possibly
-share to the TutteInstitute/toponymy discussions.
+`pantheons_mm_sq` + `10_dim_diagnostic.py`). **Plus Toponymy-label metrics (stages 07b/11/11b): #1 per-region
+mixing + depth curve, #2 EVoC high-D delta, #3 seam, #4 routing — all four datasets, all reproducing the
+geometric findings on the named regions.** **Next:** write up + publish via GitHub Pages, possibly share to
+the TutteInstitute/toponymy discussions (the label metrics tie the analysis to Toponymy for that audience).
 
 ## Env
 

@@ -21,6 +21,8 @@ dependencies = [
     "nest-asyncio>=1.5",
     "mwparserfromhell>=0.7.2",
     "beautifulsoup4>=4.15.0",
+    "plotly>=6.8.0",
+    "evoc>=0.3.1",
 ]
 
 [project.optional-dependencies]

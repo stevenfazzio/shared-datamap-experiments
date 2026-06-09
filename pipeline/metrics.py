@@ -3,6 +3,9 @@ ablation (stage 06) so every method is scored with identical code.
 
   - cross_corpus_mixing: mean fraction of each point's k nearest neighbors that are
     cross-corpus. -> 0 = blobs; fully mixed -> (K-1)/K (0.5 for two corpuses, ~0.75 for four).
+  - per_region_mixing: the same idea at Toponymy-region granularity — Gini-Simpson corpus
+    impurity (1 - sum_c p_c^2) within each NAMED region, on the same (K-1)/K scale,
+    size-weighted over named points. The label-space analog of cross_corpus_mixing.
   - linear_recoverability: 5-fold CV accuracy of predicting corpus from the embedding.
     ~1.0 = separable, -> chance = integrated. CAVEAT: with d >> n (1024 >> 102),
     in-sample linear separation is trivial, so kNN mixing and the map are the more
@@ -31,16 +34,54 @@ def cosine_sim(emb):
     return sim
 
 
-def cross_corpus_mixing(emb, corpus, k=10):
+def per_point_cross_corpus(emb, corpus, k=10):
+    """Per-point fraction of each point's k nearest (cosine) neighbors that are a DIFFERENT
+    corpus — the per-point quantity cross_corpus_mixing averages, returned aligned to emb
+    rows. Used by the label metrics to ask whether *unnamed* points sit on the corpus seam
+    (higher cross-corpus fraction than named points)."""
     sim = cosine_sim(emb)
+    corpus = np.asarray(corpus)
     n = len(corpus)
-    frac = [np.mean(corpus[np.argsort(-sim[i])[:k]] != corpus[i]) for i in range(n)]
-    return float(np.mean(frac))
+    return np.array([np.mean(corpus[np.argsort(-sim[i])[:k]] != corpus[i]) for i in range(n)])
+
+
+def cross_corpus_mixing(emb, corpus, k=10):
+    return float(np.mean(per_point_cross_corpus(emb, corpus, k)))
 
 
 def fully_mixed_baseline(corpus):
     n = len(corpus)
     return float(np.mean([np.sum(corpus != corpus[i]) / (n - 1) for i in range(n)]))
+
+
+def per_region_mixing(corpus, region_labels, unlabelled="Unlabelled"):
+    """Region analog of cross_corpus_mixing. For each NAMED region, the Gini-Simpson corpus
+    impurity 1 - sum_c p_c^2 (the probability two random members are different corpuses) —
+    same (K-1)/K maximum as cross_corpus_mixing, so the two read on one scale. `Unlabelled`
+    points are unnamed *space*, not a region, and are excluded.
+
+    Returns (aggregate, per_region):
+      aggregate   size-weighted mean impurity over named points (comparable to the
+                  point-averaged kNN mixing); nan if nothing is named.
+      per_region  {region_name: {"impurity": float, "size": int, "counts": {corpus: int}}}.
+    """
+    corpus = np.asarray(corpus)
+    region_labels = np.asarray(region_labels)
+    per_region = {}
+    wsum = total = 0.0
+    for r in sorted(x for x in set(region_labels.tolist()) if x != unlabelled):
+        vals, counts = np.unique(corpus[region_labels == r], return_counts=True)
+        p = counts / counts.sum()
+        impurity = float(1.0 - np.sum(p**2))
+        per_region[r] = {
+            "impurity": impurity,
+            "size": int(counts.sum()),
+            "counts": {str(v): int(c) for v, c in zip(vals, counts)},
+        }
+        wsum += impurity * counts.sum()
+        total += counts.sum()
+    aggregate = float(wsum / total) if total else float("nan")
+    return aggregate, per_region
 
 
 def linear_recoverability(emb, corpus, cv=5):

@@ -5,7 +5,8 @@ map (color = corpus). The questions: does the map interleave (vs the raw two-blo
 baseline), and do the region names become CROSS-CORPUS archetypes (vs corpus-pure)?
 
 Reads:  data/<dataset>/experiments/<method>/{embeddings.npz, umap_coords.npz}, entities.parquet
-Writes: data/<dataset>/experiments/<method>/map.html
+Writes: data/<dataset>/experiments/<method>/{map.html, labels.parquet}
+        (labels.parquet — id + label_layer_0..N, finest first — feeds stage 11's label metrics)
 """
 
 import numpy as np
@@ -18,7 +19,7 @@ from config import (
     OBJECT_DESCRIPTION,
 )
 from mapviz import render_map
-from topic_labeling import label_regions
+from topic_labeling import label_regions, save_labels
 
 EXP_DIR = DATA_DIR / "experiments"
 METHODS_TO_MAP = ["raw", "center", "leace", "harmony"]
@@ -41,6 +42,7 @@ def main():
 
         print(f"{method}:")
         layers = label_regions(documents, emb, coords, OBJECT_DESCRIPTION, CORPUS_DESCRIPTION)
+        save_labels(mdir / "labels.parquet", df["id"].to_numpy(), layers)
         render_map(
             coords,
             layers,
@@ -52,7 +54,7 @@ def main():
             f"{' / '.join(corpora)} — corpus signal removed via {method}",
             mdir / "map.html",
         )
-        print(f"  wrote {mdir / 'map.html'}")
+        print(f"  wrote {mdir / 'map.html'} + labels.parquet")
 
 
 if __name__ == "__main__":
