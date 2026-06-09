@@ -147,45 +147,63 @@ def _load_emb(mdir, ids):
 
 
 def _write_chart(results):
-    """Depth-curve HTML (mixing vs layer, one line per method). Best-effort: needs plotly."""
+    """Depth-curve HTML — one clean line per method: per-region mixing from Toponymy's finest
+    layer to its coarsest (2D substrate only; the high-D #2 numbers stay in the JSON). x is
+    normalized fine->coarse so methods with different layer counts align by zoom. Needs plotly."""
     try:
         import plotly.graph_objects as go
     except ImportError:
         print("  [chart skipped] plotly not installed — `uv add plotly` to enable label_metrics.html")
         return
+    max_mix = results["max_mixing"]
+    is_modality = set(results["corpuses"]) == {"image", "text"}
+    group = "image–text" if is_modality else "cross-corpus"
+    unit = "modality" if is_modality else "corpus"
+    colors = {"raw": "#9a9a9a", "center": "#1f77b4", "leace": "#2ca02c", "harmony": "#d62728"}
+
     fig = go.Figure()
     for method, entry in results["methods"].items():
         rows = entry["substrates"]["2d"]
+        n = len(rows)
+        xs = [i / (n - 1) for i in range(n)] if n > 1 else [0.5]  # fine(0) -> coarse(1)
         fig.add_trace(
             go.Scatter(
-                x=list(range(len(rows))),
+                x=xs,
                 y=[r["mixing"] for r in rows],
                 mode="lines+markers",
                 name=method,
+                line=dict(color=colors.get(method), width=3),
+                marker=dict(size=9),
+                customdata=[r["coverage"] for r in rows],
+                hovertemplate=f"{method}<br>mixing %{{y:.2f}} · coverage %{{customdata:.0%}}<extra></extra>",
             )
         )
-        hd = entry["substrates"].get("highd")
-        if hd:
-            fig.add_trace(
-                go.Scatter(
-                    x=list(range(len(hd))),
-                    y=[r["mixing"] for r in hd],
-                    mode="lines+markers",
-                    line=dict(dash="dash"),
-                    name=f"{method} (high-D)",
-                )
-            )
     fig.add_hline(
-        y=results["max_mixing"],
+        y=max_mix,
         line=dict(color="gray", dash="dot"),
-        annotation_text=f"fully mixed = (K-1)/K = {results['max_mixing']:.2f}",
+        annotation_text=f"fully mixed = {max_mix:.2f}",
+        annotation_position="top right",
     )
     fig.update_layout(
-        title=f"Per-region cross-corpus mixing by layer — {results['dataset']}",
-        xaxis_title="layer index (0 = finest regions → higher = coarser)",
-        yaxis_title="size-weighted region impurity (Gini-Simpson)",
+        title=(
+            f"{group.capitalize()} mixing of Toponymy regions — {results['dataset']}<br>"
+            f"<sub>each line: how mixed the named regions are, finest layer (left) → coarsest "
+            f"(right); higher = more mixed, {max_mix:.2f} = fully balanced</sub>"
+        ),
+        xaxis=dict(
+            title="Toponymy region scale",
+            tickvals=[0, 1],
+            ticktext=["finest layer<br>(many small regions)", "coarsest layer<br>(few big regions)"],
+            range=[-0.06, 1.06],
+        ),
+        yaxis=dict(
+            title=f"{group} mixing within a region<br>(0 = single-{unit} · {max_mix:.2f} = balanced)",
+            range=[-0.02, max_mix * 1.15],
+        ),
+        legend=dict(title="integration method"),
         template="plotly_white",
-        yaxis_range=[0, results["max_mixing"] * 1.12],
+        width=880,
+        height=560,
     )
     tmp = str(LABEL_METRICS_HTML) + ".tmp"
     fig.write_html(tmp, include_plotlyjs="inline")  # self-contained, like the maps
